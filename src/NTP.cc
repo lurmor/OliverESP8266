@@ -9,76 +9,122 @@ unsigned long syncInterval = 2000; // каждые 2 сек
 unsigned long acc = 0;
 uint32_t start = 0;
 bool waiting = false;
+bool forceUpdate = false;
 
 unsigned long t0 = 0;
 
-unsigned long getRawNtpTime()
+WiFiUDP udp;
+
+void PushTimeQuery()
 {
-    static WiFiUDP udp;
     if (udp.localPort() != 2390)
         udp.begin(2390);
 
-    if (!waiting)
-    {
-        // Отправка пакета
-        udp.beginPacket(serverIP, 1230);
-        udp.write("T", 1);
-        udp.endPacket();
-        waiting = true;
-    }
+    udp.beginPacket(serverIP, 1230);
+    udp.write("T", 1);
+    udp.endPacket();
+}
 
+unsigned long TryGetTimeResponse()
+{
+    unsigned long long ms = 0;
     int len = udp.parsePacket();
-    if (len == 8)
+    while (len == 8)
     {
         udp.read(buf, 8);
         // waiting = false;
-        unsigned long long ms = 0;
-        for (int i = 0; i < 8; i++)
-            ms = (ms << 8) | buf[i];
-
-        return ms;
+        len = udp.parsePacket();
+        if (len == 0)
+            for (int i = 0; i < 8; i++)
+                ms = (ms << 8) | buf[i];
     }
-
-    return 0;
+    return ms;
+}
+void ClearUdp()
+{
+    int len = -1;
+    while (len != 0)
+    {
+        len = udp.parsePacket();
+    }
 }
 
-unsigned long getAveragedTime()
+bool TrySincTime()
 {
-    if (!waiting || t0 == 0)
+
+    static unsigned long lastSync = GetRealTime();
+
+    if (GetRealTime() - lastSync < NTP_DELAY_MS && !waiting)
+        return false;
+
+    if (!waiting)
     {
+        ClearUdp();
         t0 = micros();
+        PushTimeQuery();
+        waiting = true;
     }
 
-    unsigned long t = getRawNtpTime();
+    unsigned long t = TryGetTimeResponse();
     if (t != 0)
     {
         // Serial.printf("Synced: %lu\n", t);
-
+        waiting = false;
         unsigned long t1 = micros();
         unsigned long latency = (t1 - t0) / 2;
-        if (latency < 1000 * 1000)
+
+        if (acc == 0)
+            acc = latency;
+
+        acc = (acc + latency) / 2;
+        Serial.printf("latency: %lu microSec\n", acc);
+        // forceUpdate = false;
+        unsigned long ct = t + acc / 1000;
+        PrintLogln(ct);
+        long error = GetRealTime() - ct;
+        if (unixTimeShift == 0)
         {
-            if (acc == 0)
-                acc = latency;
-            acc = (acc + latency) / 2;
-            Serial.printf("latency: %lu\n", acc);
-            return t + acc / 1000;
+            unixTimeShift = ct - millis();
+            error = 0;
+        }
+
+        unixTimeShift = unixTimeShift / 2 + (ct - millis()) / 2;
+        PrintLog("Time error :");
+        PrintLogln(error);
+        if (error > 100 || error < -100)
+        {
+            waiting = false;
+            acc = 0;
+            PrintLogln("Time error > 100 !!!!!!!!!!!!!!!!!!!!");
+            if (error > 10000 || error < -10000)
+            {
+                unixTimeShift = 0;
+                error = 0;
+            }
+        }
+        else
+        {
+            double timeSpeedError = (double)error / millis();
+            PrintLog("Time Speed error :");
+            PrintLogln(timeSpeedError * 1000000);
+            timeSpeed = timeSpeed - timeSpeedError / 2;
+            lastSync = GetRealTime();
+            return true;
         }
     }
 
-    if (micros() - t0 > NTP_DELAY_MS * 1000)
-    {
-        waiting = false;
-    }
-    return 0;
+    return false;
 }
 
-unsigned long GetRealTime()
+unsigned long
+GetRealTime()
 {
+    // if (unixTimeShift == 0)
+    //     return 0;
     return unixTimeShift + millis() * timeSpeed;
 }
 
-void ForceNTPUpdate()
-{
-    waiting = false;
-}
+// void ForceNTPUpdate()
+// {
+//     waiting = false;
+// }

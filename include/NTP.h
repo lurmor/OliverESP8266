@@ -3,7 +3,8 @@
 #include <Arduino.h>
 #include <WiFiUdp.h>
 #include "globalData.h"
-unsigned long getAveragedTime();
+// unsigned long getAveragedTime();
 unsigned long GetRealTime();
-void ForceNTPUpdate();
+// void ForceNTPUpdate();
+bool TrySincTime();
 #endif /* NTP_H */

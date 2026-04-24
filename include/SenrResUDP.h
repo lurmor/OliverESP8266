@@ -3,18 +3,18 @@
 
 #include <Arduino.h>
 #include <WiFiUdp.h>
-
+#include "simpleList.h"
 class UdpSender
 {
 private:
     WiFiUDP _udp;
-    IPAddress _remoteIP;
+    IPAddress _remoteIP; // TODO List
     uint16_t _remotePort;
     uint16_t _localPort;
     bool _started;
 
 public:
-    UdpSender(IPAddress remoteIP, uint16_t remotePort, uint16_t localPort);
+    UdpSender(uint16_t remotePort, uint16_t localPort);
 
     void Begin();
 
@@ -32,7 +32,7 @@ private:
     uint16_t _localPort;
     bool _started;
 
-    uint8_t _buffer[256];
+    uint8_t _buffer[512];
     size_t _packetSize;
 
 public:

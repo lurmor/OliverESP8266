@@ -1,8 +1,8 @@
 #include "SenrResUDP.h"
+#include "Debuging.h"
 
-UdpSender::UdpSender(IPAddress remoteIP, uint16_t remotePort, uint16_t localPort)
-    : _remoteIP(remoteIP),
-      _remotePort(remotePort),
+UdpSender::UdpSender(uint16_t remotePort, uint16_t localPort)
+    : _remotePort(remotePort),
       _localPort(localPort)
 {
     Begin();
@@ -10,16 +10,17 @@ UdpSender::UdpSender(IPAddress remoteIP, uint16_t remotePort, uint16_t localPort
 
 void UdpSender::Begin()
 {
-    if (!_started)
-    {
-        _udp.begin(_localPort);
-        _started = true;
-    }
+    // if (!_started)
+    // {
+    _udp.begin(_localPort);
+    //}
 }
 
 void UdpSender::SetRemoteIP(IPAddress ipaddr)
 {
     _remoteIP = ipaddr;
+    _started = true;
+    PrintLogln("Transive remoteIp set to" + _remoteIP.toString());
 }
 
 bool UdpSender::Send(const uint8_t *data, size_t len)

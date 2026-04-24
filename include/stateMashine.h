@@ -11,6 +11,8 @@ void SetSMFlag(SMFlags &flags, SMFlags flag, bool value);
 #define WIFICONECTED (SMFlags)2
 #define MDNSFINDED (SMFlags)4
 #define TCPCONECTED (SMFlags)8
+#define TRANSIVEROPEN (SMFlags)16
+#define RESSIVEROPEN (SMFlags)32
 
 struct Condision
 {

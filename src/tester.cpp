@@ -21,6 +21,9 @@ stateMashine *mainSM = nullptr;
 UdpReceiver *udpRes = nullptr;
 UdpSender *udpSend = nullptr;
 unsigned long circleLastTime = 0;
+unsigned int circlesPerSec = 0;
+
+void ProcessServerRec(String line);
 
 void T_PrepareConectWIFI()
 {
@@ -73,6 +76,7 @@ void S_TCPUpdade()
   {
     String line = client.readStringUntil('\r');
     PrintLog("Received: " + line);
+    ProcessServerRec(line);
   }
   if (client.connected() == false)
   {
@@ -83,48 +87,71 @@ void S_TCPUpdade()
 
 void ProcessServerRec(String line)
 {
+  if (line[2] == 'D')
+  {
+    if (line[3] == 'S')
+    {
+      SetSMFlag(GlobalSMFlags, TRANSIVEROPEN, false);
+      SetSMFlag(GlobalSMFlags, RESSIVEROPEN, false);
+    }
+    if (line[3] == 'T')
+    {
+
+      line = line.substring(4);
+      IPAddress ip = IPAddress();
+      if (ip.fromString(line))
+      {
+        SetSMFlag(GlobalSMFlags, TRANSIVEROPEN, true);
+        udpSend->SetRemoteIP(ip);
+      }
+    }
+    if (line[3] == 'R')
+    {
+      SetSMFlag(GlobalSMFlags, RESSIVEROPEN, true);
+    }
+  }
 }
 
 void S_SyncTime()
 {
 
-  unsigned long t = getAveragedTime();
-  if (t != 0)
-  {
-    int error = GetRealTime() - t;
-    if (unixTimeShift == 0)
-      error = 0;
-    unixTimeShift = t - millis();
-    PrintLog("Time error :");
-    PrintLog(error);
-    if (error > 100)
-    {
-      ForceNTPUpdate();
-      PrintLogln("Time Speed error > 100 !!!!!!!!!!!!!!!!!!!!");
-    }
-    else
-    {
-      double timeSpeedError = (double)error / millis();
-      PrintLog("Time Speed error :");
-      PrintLog(timeSpeedError);
-      timeSpeed = timeSpeed - timeSpeedError / 2;
-    }
+  TrySincTime();
 
-    // Serial.print
+  unsigned long circleTime = GetRealTime();
+
+  // if (circleLastTime != 0)
+  // {
+  if (circleTime - circleLastTime > 1000)
+  {
+
+    PrintLog("CPS = ");
+    PrintLogln(circlesPerSec);
+    circlesPerSec = 0;
+    circleLastTime = circleTime;
   }
   else
   {
+    circlesPerSec++;
   }
-  // unsigned long circleTime = GetRealTime();
-  // if (circleLastTime != 0)
-  // {
-  //   PrintLog("Time Circle = ");
-  //   PrintLog(circleTime - circleLastTime);
   // }
-  // circleLastTime = circleTime;
 
   // else
   /// PrintLogln("NTP sync failed");
+}
+
+void S_UDPSpamTest()
+{
+  byte buf[1000];
+  for (int i = 0; i < 1000; i++)
+    buf[i] = 100;
+  if (!udpSend->Send(buf, 1000))
+  {
+    PrintLogln("SendERROR");
+  }
+  else
+  {
+    // PrintLogln("DataSended");
+  }
 }
 
 void setup()
@@ -153,6 +180,7 @@ void setup()
   TCPParing.addAction(S_ConectTCP);
   TCPUpdate.addAction(S_TCPUpdade);
   NTPUpdate.addAction(S_SyncTime);
+  Output.addAction(S_UDPSpamTest);
 
   static Transition ConWIFItoMdns(&mDNS, WIFICONECTED);
   WIFI.AddTrsn(&ConWIFItoMdns);
@@ -171,10 +199,24 @@ void setup()
   static Transition TCPtoNTP(&NTPUpdate, {AUTOTRSN, AUTOTRSN});
   TCPUpdate.AddTrsn(&TCPtoNTP);
 
+  static Transition NTPtoIN(&Input, RESSIVEROPEN);
+  NTPUpdate.AddTrsn(&NTPtoIN);
+
+  static Transition NTPtoOUT(&Output, TRANSIVEROPEN);
+  NTPUpdate.AddTrsn(&NTPtoOUT);
+
   static Transition NTPtoTCP(&TCPUpdate, {AUTOTRSN, AUTOTRSN});
   NTPUpdate.AddTrsn(&NTPtoTCP);
+  static Transition INtoTCP(&TCPUpdate, {AUTOTRSN, AUTOTRSN});
+  Input.AddTrsn(&INtoTCP);
+  static Transition OuttoTCP(&TCPUpdate, {AUTOTRSN, AUTOTRSN});
+  Output.AddTrsn(&OuttoTCP);
 
   mainSM = new stateMashine(&Start, &Any);
+  udpRes = new UdpReceiver(UDP_AUDIO_IN_PORT);
+  // udpRes->Begin();
+  udpSend = new UdpSender(UDP_AUDIO_IN_PORT, UDP_AUDIO_OUT_PORT);
+  // udpSend->Begin();
 
   delay(1000);
 }
