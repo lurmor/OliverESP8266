@@ -6,3 +6,4 @@ uint16_t tcpServerPort = 0;
 WiFiClient client;
 unsigned long unixTimeShift = 0;
 double timeSpeed = 1;
+uint32_t SN = 0;

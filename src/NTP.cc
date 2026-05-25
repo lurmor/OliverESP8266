@@ -57,6 +57,12 @@ bool TrySincTime()
     if (GetRealTime() - lastSync < NTP_DELAY_MS && !waiting)
         return false;
 
+    if (GetRealTime() - lastSync > 2 * NTP_DELAY_MS && waiting)
+    {
+        waiting = false;
+        lastSync = GetRealTime();
+    }
+
     if (!waiting)
     {
         ClearUdp();

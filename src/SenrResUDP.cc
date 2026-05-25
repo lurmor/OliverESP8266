@@ -60,16 +60,18 @@ void UdpReceiver::Begin()
 }
 
 // Неблокирующая проверка
-bool UdpReceiver::Update()
+int UdpReceiver::Update()
 {
     int len = _udp.parsePacket();
+    // PrintLogln(len);
     if (len > 0 && len <= sizeof(_buffer))
     {
         _packetSize = _udp.read(_buffer, len);
-        return true;
+        _buffer[len] = '\0';
+        return len;
     }
 
-    return false;
+    return 0;
 }
 
 const uint8_t *UdpReceiver::GetData() const

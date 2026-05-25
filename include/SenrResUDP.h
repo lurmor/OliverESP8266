@@ -32,7 +32,7 @@ private:
     uint16_t _localPort;
     bool _started;
 
-    uint8_t _buffer[512];
+    uint8_t _buffer[2048];
     size_t _packetSize;
 
 public:
@@ -41,7 +41,7 @@ public:
     void Begin();
 
     // неблокирующая проверка
-    bool Update();
+    int Update();
 
     const uint8_t *GetData() const;
 
