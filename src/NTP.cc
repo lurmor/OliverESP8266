@@ -10,6 +10,7 @@ unsigned long acc = 0;
 uint32_t start = 0;
 bool waiting = false;
 bool forceUpdate = false;
+bool isUdpInitialized = false;
 
 unsigned long t0 = 0;
 
@@ -17,11 +18,13 @@ WiFiUDP udp;
 
 void PushTimeQuery()
 {
-    if (udp.localPort() != 2390)
-        udp.begin(2390);
-
+    if (!isUdpInitialized)
+    {
+        if (udp.begin(2390))
+            isUdpInitialized = true;
+    }
     udp.beginPacket(serverIP, 1230);
-    udp.write("T", 1);
+    udp.write((const uint8_t *)"T", 1);
     udp.endPacket();
 }
 

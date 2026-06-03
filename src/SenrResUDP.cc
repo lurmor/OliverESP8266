@@ -27,12 +27,13 @@ bool UdpSender::Send(const uint8_t *data, size_t len)
 {
     if (!_started)
         return false;
-
     if (!_udp.beginPacket(_remoteIP, _remotePort))
         return false;
 
     _udp.write(data, len);
-    return _udp.endPacket();
+    bool res = _udp.endPacket();
+
+    return res;
 }
 
 bool UdpSender::SendUint64(uint64_t value)
@@ -47,7 +48,7 @@ bool UdpSender::SendUint64(uint64_t value)
 UdpReceiver::UdpReceiver(uint16_t localPort)
     : _localPort(localPort)
 {
-    void Begin();
+    Begin();
 }
 
 void UdpReceiver::Begin()
@@ -62,13 +63,16 @@ void UdpReceiver::Begin()
 // Неблокирующая проверка
 int UdpReceiver::Update()
 {
-    int len = _udp.parsePacket();
-    // PrintLogln(len);
-    if (len > 0 && len <= sizeof(_buffer))
+    if (_started)
     {
-        _packetSize = _udp.read(_buffer, len);
-        _buffer[len] = '\0';
-        return len;
+        int len = _udp.parsePacket();
+        // PrintLogln(len);
+        if (len > 0 && len <= sizeof(_buffer) - 1)
+        {
+            _packetSize = _udp.read(_buffer, len);
+            _buffer[len] = '\0';
+            return len;
+        }
     }
 
     return 0;

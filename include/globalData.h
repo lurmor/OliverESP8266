@@ -2,8 +2,13 @@
 #define GLOBALDATA_H
 
 #include <Arduino.h>
+#if defined(ESP32)
+#include <WiFi.h>
+#elif defined(ESP8266)
 #include <ESP8266WiFi.h>
-
+#else
+#error "Неизвестная платформа! Выберите ESP8266 или ESP32."
+#endif
 typedef uint SMFlags;
 // #define SN 1234567890
 #define UNITTYPE 1

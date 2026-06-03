@@ -50,8 +50,7 @@ void sendMDNSQuery(const char *name, IPAddress localIP)
   packet[len++] = 0x80;
   packet[len++] = 0x01;
 
-  // Отправка
-  mDNSudp.beginPacketMulticast(IPAddress(224, 0, 0, 251), 5353, localIP, 255);
+  mDNSudp.beginPacket(IPAddress(224, 0, 0, 251), 5353);
   mDNSudp.write(packet, len);
   mDNSudp.endPacket();
 
@@ -163,7 +162,12 @@ bool parseMDNS(uint8_t *buf, int size,
 int findmDNS(IPAddress localIP, String target, IPAddress &ip, uint16_t &port)
 {
   unsigned long start = millis();
+#if defined(ESP8266)
   mDNSudp.beginMulticast(localIP, IPAddress(224, 0, 0, 251), 5353);
+#elif defined(ESP32)
+  // На ESP32 передается только IP группы и порт
+  mDNSudp.beginMulticast(IPAddress(224, 0, 0, 251), 5353);
+#endif
 
   sendMDNSQuery("_rtp._tcp.local", localIP);
 

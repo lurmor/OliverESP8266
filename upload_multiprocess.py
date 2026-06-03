@@ -4,7 +4,7 @@ from threading import Thread # Заменили Process на Thread
 Import("env")
 
 # 1. Укажите ваши порты здесь
-TARGET_PORTS = ["COM3", "COM5"] 
+TARGET_PORTS = ["COM6", "COM5"] 
 
 def run_esptool(port, firmware_path):
     # Достаем точный путь к python внутри PlatformIO, чтобы найти esptool
