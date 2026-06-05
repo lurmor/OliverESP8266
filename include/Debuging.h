@@ -3,6 +3,8 @@
 
 #include <Arduino.h>
 #define DEBUG
+#define STAT
+
 
 void PrintLog(const Printable &str);
 template <typename T>

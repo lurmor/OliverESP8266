@@ -4,7 +4,8 @@
 #include <WiFiUdp.h>
 #include "globalData.h"
 // unsigned long getAveragedTime();
-unsigned long GetRealTime();
+uint64_t GetRealTime();
+uint16_t GetRealTimeMarker();
 // void ForceNTPUpdate();
 bool TrySincTime();
 #endif /* NTP_H */

@@ -12,7 +12,7 @@
 typedef uint SMFlags;
 // #define SN 1234567890
 #define UNITTYPE 1
-#define NTP_DELAY_MS 5000
+#define NTP_DELAY_MS 1000
 #define UDP_AUDIO_IN_PORT 45521
 #define UDP_AUDIO_OUT_PORT 45522
 
@@ -20,7 +20,7 @@ extern SMFlags GlobalSMFlags;  // объявление
 extern IPAddress serverIP;     // объявление
 extern uint16_t tcpServerPort; // объявление
 extern WiFiClient client;
-extern unsigned long unixTimeShift;
+extern uint64_t unixTimeShift;
 extern double timeSpeed;
 extern uint32_t SN;
 

@@ -12,6 +12,7 @@
 #include <WiFiUdp.h>
 #include "findmDNS.h"
 #include "stateMashine.h"
+#include "CircularArray.h"
 #include "NTP.h"
 #include "SenrResUDP.h"
 /// #include "globalData.h"
@@ -34,8 +35,9 @@ unsigned int statesPerSec = 0;
 unsigned int packetsPerSec = 0;
 unsigned int errorsPerSec = 0;
 
-QueueHandle_t audioQueue;
-QueueHandle_t tcpIncomingQueue = NULL; // Очередь для передачи буферов между ядрами
+QueueHandle_t audioInQueue;
+QueueHandle_t audioOutQueue;
+QueueHandle_t tcpIncomingQueue = NULL;
 
 struct AudioBuffer
 {
@@ -46,10 +48,12 @@ struct NetworkMessage
 {
   char payload[256];
 };
+CircularArray<AudioBuffer> circArr(16);
 
 void ProcessServerRec(String line);
 void AudioCaptureTask(void *pvParameters);
 void NetworkTask(void *pvParameters);
+void RecoverMissingPacketAdvanced(const AudioBuffer &prev, const AudioBuffer &next, AudioBuffer &missing);
 
 void T_PrepareConectWIFI()
 {
@@ -91,6 +95,7 @@ void S_IDLE()
 
   // if (circleLastTime != 0)
   // {
+#ifdef STAT
   if (circleTime - circleLastTime > 1000)
   {
 
@@ -110,6 +115,7 @@ void S_IDLE()
     errorsPerSec = 0;
     circleLastTime = circleTime;
   }
+#endif
 }
 
 void S_ConectWIFI()
@@ -205,20 +211,111 @@ void S_SyncTime()
 
 void S_UDPSpamTest()
 {
-  AudioBuffer currentBuffer;
+  const uint32_t packMicrosDelay = 1000000 / 128;
+  static uint32_t lastPacket = micros();
 
-  int count = 1392;
-  currentBuffer.data[1] = count;
-  // for (int i = 2; i < count; i++)
-  //  currentBuffer.data[i] = 100;
-
-  if (xQueueSend(audioQueue, &currentBuffer, 0) != pdPASS)
+  if (micros() - lastPacket >= packMicrosDelay)
   {
-    // Очередь переполнена (проблемы с сетью), фиксируем пропуск
+    lastPacket = micros();
+
+    AudioBuffer currentBuffer;
+
+    uint16_t count = 1392;
+    static uint16_t ind = 0;
+    uint16_t time = GetRealTimeMarker();
+
+    currentBuffer.data[0] = (uint8_t)(count & 0xFF);
+    currentBuffer.data[1] = (uint8_t)((count >> 8) & 0xFF);
+
+    currentBuffer.data[2] = (uint8_t)(ind & 0xFF);
+    currentBuffer.data[3] = (uint8_t)((ind >> 8) & 0xFF);
+
+    currentBuffer.data[4] = (uint8_t)(time & 0xFF);
+    currentBuffer.data[5] = (uint8_t)((time >> 8) & 0xFF);
+
+    if (xQueueSend(audioOutQueue, &currentBuffer, 0) == pdPASS)
+      ind++;
   }
 }
 void S_UDPParse()
 {
+  AudioBuffer abuffer;
+  static SlideWindow<int> latensy(1);
+
+  if (xQueueReceive(audioInQueue, &abuffer, 0) == pdPASS)
+  {
+    uint16_t count = abuffer.data[0] | (abuffer.data[1] << 8);
+    uint16_t ind = abuffer.data[2] | (abuffer.data[3] << 8);
+    uint16_t time = abuffer.data[4] | (abuffer.data[5] << 8);
+    memcpy(circArr.get(ind), &abuffer, 1400);
+    circArr.SetLast(ind);
+    latensy.push(GetRealTimeMarker() - time);
+    // PrintLog(latensy.getAverage());
+  }
+}
+
+void S_PushAudio()
+{
+  static int pointer = 0;
+  AudioBuffer zeroAudio;
+  static AudioBuffer *currentAudio;
+  static AudioBuffer *lastAudio;
+  memset(&zeroAudio, 0, sizeof(AudioBuffer));
+
+  uint16_t shiftMs = 30;
+
+  currentAudio = circArr.get(pointer);
+
+  Serial.printf(" %03u     ", currentAudio->data[2]);
+  if (currentAudio->data[0] == 0)
+  {
+    PrintLogln("AUDIO LOST");
+    AudioBuffer *nextAudio = circArr.get(pointer + 1);
+
+    // ЗАЩИТА 2: Проверяем, что и прошлый, и следующий пакеты физически существуют в памяти
+    if (lastAudio != nullptr && nextAudio != nullptr)
+    {
+      if (lastAudio->data[0] != 0 && nextAudio->data[0] != 0)
+      {
+        RecoverMissingPacketAdvanced(*lastAudio, *nextAudio, *currentAudio);
+        PrintLogln("AUDIO Recover");
+      }
+      else
+      {
+        memcpy(lastAudio, &zeroAudio, 1400);
+        lastAudio = currentAudio;
+        pointer++;
+      }
+    }
+    else
+    {
+      if (lastAudio != nullptr)
+        memcpy(lastAudio, &zeroAudio, 1400);
+      lastAudio = currentAudio;
+      pointer++;
+    }
+  }
+  else
+  {
+    uint16_t time = currentAudio->data[4] | (currentAudio->data[5] << 8);
+    if (time + shiftMs - GetRealTimeMarker() <= 0)
+    {
+
+      for (size_t i = 0; i < circArr.size(); ++i)
+      {
+        auto ptr = circArr.get(i);
+        Serial.printf(" %03u", ptr->data[2]);
+      }
+
+      pointer++;
+      if (lastAudio != nullptr)
+        memcpy(lastAudio, &zeroAudio, 1400);
+      lastAudio = currentAudio;
+    }
+  }
+  PrintLogln("");
+
+  // PrintLogln("OVERLAP");
 }
 
 void setup()
@@ -251,6 +348,7 @@ void setup()
   NTPUpdate.addAction(S_SyncTime);
   Output.addAction(S_UDPSpamTest);
   Input.addAction(S_UDPParse);
+  Input.addAction(S_PushAudio);
   IDLE.addAction(S_IDLE);
 
   static Transition ConWIFItoMdns(&mDNS, T_PostConectWIFI, WIFICONECTED);
@@ -291,7 +389,8 @@ void setup()
 
   mainSM = new stateMashine(&Start, &Any);
 
-  audioQueue = xQueueCreate(10, sizeof(AudioBuffer));
+  audioInQueue = xQueueCreate(10, sizeof(AudioBuffer));
+  audioOutQueue = xQueueCreate(10, sizeof(AudioBuffer));
   tcpIncomingQueue = xQueueCreate(10, sizeof(NetworkMessage));
 
   // Подключаем Wi-Fi ...
@@ -300,7 +399,7 @@ void setup()
   xTaskCreatePinnedToCore(
       AudioCaptureTask, // Функция задачи
       "AudioTask",      // Название
-      4096,             // Размер стека
+      16384,            // Размер стека
       NULL,             // Параметры
       3,                // Приоритет (высокий)
       NULL,             // Хэндл задачи
@@ -353,8 +452,8 @@ void NetworkTask(void *pvParameters)
   byte header[2];
   byte buf[256];
   uint32_t lastConnCheck = 0;
-  int targetPPS = 128;
-  const TickType_t xFrequency = pdMS_TO_TICKS(1000.0/targetPPS);
+  int targetPPS = 512;
+  const TickType_t xFrequency = pdMS_TO_TICKS(1000.0 / targetPPS);
   TickType_t xLastWakeTime;
 
   xLastWakeTime = xTaskGetTickCount();
@@ -404,6 +503,17 @@ void NetworkTask(void *pvParameters)
       int len = udpRes->Update();
       if (len > 0)
       {
+        auto msg = udpRes->GetData();
+
+        // Добавляем static. Переменная больше НЕ живет на стеке!
+        static AudioBuffer abuffer;
+
+        // Очищаем старые данные перед копированием (на всякий случай)
+        memset(&abuffer, 0, sizeof(AudioBuffer));
+
+        memcpy(abuffer.data, msg, len);
+
+        xQueueSend(audioInQueue, &abuffer, 0);
         packetsPerSec++;
       }
     }
@@ -414,7 +524,7 @@ void NetworkTask(void *pvParameters)
       // Шаг А: Берем пакет из очереди (без блокировки, t=0)
       if (!hasPendingAudio)
       {
-        if (xQueueReceive(audioQueue, &bufferToSend, 0) == pdPASS)
+        if (xQueueReceive(audioOutQueue, &bufferToSend, 0) == pdPASS)
         {
           hasPendingAudio = true;
         }
@@ -449,7 +559,39 @@ void loop()
   vTaskDelete(NULL);
 }
 
-// void loop()
-// {
-//   mainSM->SMIteration();
-// }
+void RecoverMissingPacketAdvanced(const AudioBuffer &prev, const AudioBuffer &next, AudioBuffer &missing)
+{
+  const size_t audioOffset = 6;
+  const size_t numSamples = (1400 - audioOffset) / sizeof(int16_t) / 2; // 348 стерео-семплов
+
+  const int16_t *prevSamples = reinterpret_cast<const int16_t *>(prev.data + audioOffset);
+  const int16_t *nextSamples = reinterpret_cast<const int16_t *>(next.data + audioOffset);
+  int16_t *missingSamples = reinterpret_cast<int16_t *>(missing.data + audioOffset);
+
+  const uint16_t *prevHeader = reinterpret_cast<const uint16_t *>(prev.data);
+  const uint16_t *nextHeader = reinterpret_cast<const uint16_t *>(next.data);
+  uint16_t *missingHeader = reinterpret_cast<uint16_t *>(missing.data);
+  missingHeader[0] = prevHeader[0];
+  missingHeader[1] = static_cast<uint16_t>(prevHeader[1] + 1);
+  missingHeader[2] = static_cast<uint16_t>(prevHeader[2] / 2 + nextHeader[2] / 2);
+
+  for (size_t i = 0; i < numSamples; ++i)
+  {
+    float alpha = static_cast<float>(i) / static_cast<float>(numSamples - 1);
+
+    float weightPrev = 1.0f - alpha;
+    float weightNext = alpha;
+
+    int16_t srcPrevL = prevSamples[i * 2];
+    int16_t srcPrevR = prevSamples[i * 2 + 1];
+
+    int16_t srcNextL = nextSamples[i * 2];
+    int16_t srcNextR = nextSamples[i * 2 + 1];
+
+    float mixedL = (srcPrevL * weightPrev) + (srcNextL * weightNext);
+    missingSamples[i * 2] = static_cast<int16_t>(mixedL);
+
+    float mixedR = (srcPrevR * weightPrev) + (srcNextR * weightNext);
+    missingSamples[i * 2 + 1] = static_cast<int16_t>(mixedR);
+  }
+}

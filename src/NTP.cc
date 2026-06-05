@@ -1,20 +1,27 @@
 #include "NTP.h"
 #include "Debuging.h"
+#include "CircularArray.h"
+// Убедись, что класс SlideWindow подключен
+// #include "SlideWindow.h"
+
 const int NTP_PACKET_SIZE = 48;
 byte buf[8];
 
-unsigned long lastSync = 0;
+uint64_t lastSync = 0;
 unsigned long syncInterval = 2000; // каждые 2 сек
 
-unsigned long acc = 0;
+// unsigned long acc = 0;
 uint32_t start = 0;
 bool waiting = false;
 bool forceUpdate = false;
 bool isUdpInitialized = false;
 
 unsigned long t0 = 0;
-
 WiFiUDP udp;
+
+// Инициализация оконного фильтра для задержки (размер окна = 5)
+SlideWindow<uint64_t> ShiftWindow(10);
+SlideWindow<double> SpeedWindow(10);
 
 void PushTimeQuery()
 {
@@ -28,42 +35,61 @@ void PushTimeQuery()
     udp.endPacket();
 }
 
-unsigned long TryGetTimeResponse()
+uint64_t TryGetTimeResponse()
 {
-    unsigned long long ms = 0;
+    uint64_t ms = 0;
+    bool gotData = false;
     int len = udp.parsePacket();
-    while (len == 8)
+
+    while (len > 0)
     {
-        udp.read(buf, 8);
-        // waiting = false;
+        if (len == 8)
+        {
+            udp.read(buf, 8);
+            gotData = true;
+        }
+        else
+        {
+            // Очищаем мусорные пакеты
+            while (udp.available())
+            {
+                udp.read();
+            }
+        }
         len = udp.parsePacket();
-        if (len == 0)
-            for (int i = 0; i < 8; i++)
-                ms = (ms << 8) | buf[i];
     }
+
+    if (gotData)
+    {
+        for (int i = 0; i < 8; i++)
+            ms = (ms << 8) | buf[i];
+    }
+
     return ms;
 }
+
 void ClearUdp()
 {
-    int len = -1;
-    while (len != 0)
+    while (udp.parsePacket() > 0)
     {
-        len = udp.parsePacket();
+        while (udp.available())
+        {
+            udp.read();
+        }
     }
 }
 
 bool TrySincTime()
 {
+    uint64_t currentTime = GetRealTime();
 
-    static unsigned long lastSync = GetRealTime();
-
-    if (GetRealTime() - lastSync < NTP_DELAY_MS && !waiting)
+    if (currentTime - lastSync < NTP_DELAY_MS && !waiting)
         return false;
 
-    if (GetRealTime() - lastSync > 2 * NTP_DELAY_MS && waiting)
+    if (currentTime - lastSync > 2 * NTP_DELAY_MS && waiting)
     {
         waiting = false;
-        lastSync = GetRealTime();
+        lastSync = currentTime;
     }
 
     if (!waiting)
@@ -74,50 +100,53 @@ bool TrySincTime()
         waiting = true;
     }
 
-    unsigned long t = TryGetTimeResponse();
+    uint64_t t = TryGetTimeResponse();
     if (t != 0)
     {
-        // Serial.printf("Synced: %lu\n", t);
         waiting = false;
         unsigned long t1 = micros();
-        unsigned long latency = (t1 - t0) / 2;
 
-        if (acc == 0)
-            acc = latency;
+        unsigned long latency = (unsigned long)(t1 - t0) / 2;
+        uint64_t ct = t + latency / 1000;
+        long error = (long)(currentTime - ct);
 
-        acc = (acc + latency) / 2;
-        Serial.printf("latency: %lu microSec\n", acc);
-        // forceUpdate = false;
-        unsigned long ct = t + acc / 1000;
-        PrintLogln(ct);
-        long error = GetRealTime() - ct;
         if (unixTimeShift == 0)
         {
-            unixTimeShift = ct - millis();
             error = 0;
         }
+        ShiftWindow.push((ct - millis()));
+        unixTimeShift = ShiftWindow.getAverage();
 
-        unixTimeShift = unixTimeShift / 2 + (ct - millis()) / 2;
+#ifdef STAT
+        Serial.printf("latency: %lu microSec\n", latency);
         PrintLog("Time error :");
         PrintLogln(error);
+#endif
         if (error > 100 || error < -100)
         {
-            waiting = false;
-            acc = 0;
             PrintLogln("Time error > 100 !!!!!!!!!!!!!!!!!!!!");
             if (error > 10000 || error < -10000)
             {
+                ShiftWindow.clear();
                 unixTimeShift = 0;
                 error = 0;
             }
         }
         else
         {
-            double timeSpeedError = (double)error / millis();
-            PrintLog("Time Speed error :");
-            PrintLogln(timeSpeedError * 1000000);
-            timeSpeed = timeSpeed - timeSpeedError / 2;
-            lastSync = GetRealTime();
+            uint32_t currentMillis = millis();
+            if (currentMillis > 0)
+            {
+                double timeSpeedError = (double)error / currentMillis;
+
+#ifdef STAT
+                PrintLog("Time Speed error :");
+                PrintLogln(timeSpeedError * 1000000);
+#endif
+                SpeedWindow.push(timeSpeed - timeSpeedError);
+                timeSpeed = SpeedWindow.getAverage();
+            }
+            lastSync = currentTime;
             return true;
         }
     }
@@ -125,15 +154,12 @@ bool TrySincTime()
     return false;
 }
 
-unsigned long
-GetRealTime()
+uint64_t GetRealTime()
 {
-    // if (unixTimeShift == 0)
-    //     return 0;
-    return unixTimeShift + millis() * timeSpeed;
+    return unixTimeShift + (uint64_t)(millis() * timeSpeed);
 }
 
-// void ForceNTPUpdate()
-// {
-//     waiting = false;
-// }
+uint16_t GetRealTimeMarker()
+{
+    return (uint16_t)(GetRealTime() & 0xFFFF);
+}
