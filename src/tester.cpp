@@ -1,13 +1,8 @@
 #include <Arduino.h>
 // To32#include <ESP8266WiFi.h>
-#if defined(ESP32)
+
 #include <WiFi.h>
 #include <esp_wifi.h>
-#elif defined(ESP8266)
-#include <ESP8266WiFi.h>
-#else
-#error "Неизвестная платформа! Выберите ESP8266 или ESP32."
-#endif
 
 #include <WiFiUdp.h>
 #include "findmDNS.h"
@@ -17,10 +12,7 @@
 #include "SenrResUDP.h"
 /// #include "globalData.h"
 #include "Debuging.h"
-
-#ifdef WITH_GDB
-#include <GDBStub.h>
-#endif
+#include "Blinker.h"
 
 #ifndef STASSID
 #define STASSID "gachi24"
@@ -38,6 +30,7 @@ unsigned int errorsPerSec = 0;
 QueueHandle_t audioInQueue;
 QueueHandle_t audioOutQueue;
 QueueHandle_t tcpIncomingQueue = NULL;
+Blinker wifiLed(2, 500);
 
 struct AudioBuffer
 {
@@ -53,6 +46,7 @@ CircularArray<AudioBuffer> circArr(16);
 void ProcessServerRec(String line);
 void AudioCaptureTask(void *pvParameters);
 void NetworkTask(void *pvParameters);
+void blinkLEDNonBlocking(int pin, unsigned long interval);
 void RecoverMissingPacketAdvanced(const AudioBuffer &prev, const AudioBuffer &next, AudioBuffer &missing);
 
 void T_PrepareConectWIFI()
@@ -329,7 +323,6 @@ void setup()
   delay(1000);
   PrintLogln("started");
   esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-
   static State Start("Start");
   static State Any("any");
   static State WIFI("WIFI");
@@ -440,6 +433,7 @@ void AudioCaptureTask(void *pvParameters)
   {
     // 1. Наполняем currentBuffer.data данными (4 канала, 44кГц)
     // В идеале здесь используется i2s_read(), который работает через DMA
+    wifiLed.update();
     mainSM->SMIteration();
     statesPerSec++;
 
@@ -593,5 +587,23 @@ void RecoverMissingPacketAdvanced(const AudioBuffer &prev, const AudioBuffer &ne
 
     float mixedR = (srcPrevR * weightPrev) + (srcNextR * weightNext);
     missingSamples[i * 2 + 1] = static_cast<int16_t>(mixedR);
+  }
+}
+
+void blinkLEDNonBlocking(int pin, unsigned long interval)
+{
+  // Статические переменные «живут» всё время работы программы
+  static unsigned long lastToggleTime = 0;
+  static bool ledState = LOW;
+
+  unsigned long currentMillis = millis();
+
+  // Проверяем, прошло ли нужное количество времени (интервал)
+  if (currentMillis - lastToggleTime >= interval)
+  {
+    lastToggleTime = currentMillis; // Запоминаем время текущего переключения
+    ledState = !ledState;           // Инвертируем состояние (был LOW -> стал HIGH)
+
+    digitalWrite(pin, ledState); // Физически переключаем пин
   }
 }
