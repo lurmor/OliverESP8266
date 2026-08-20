@@ -1,4 +1,5 @@
 #include "findmDNS.h"
+#include "Debuging.h"
 
 WiFiUDP mDNSudp;
 
@@ -54,7 +55,7 @@ void sendMDNSQuery(const char *name, IPAddress localIP)
   mDNSudp.write(packet, len);
   mDNSudp.endPacket();
 
-  Serial.println("mDNS query sent!");
+  PrintLogln("mDNS query sent!");
 }
 
 String readName(uint8_t *buf, int &pos, int size)
@@ -189,6 +190,7 @@ int findmDNS(IPAddress localIP, String target, IPAddress &ip, uint16_t &port)
         }
       }
     }
+    delay(1);
   }
   mDNSudp.stop();
   return -1;

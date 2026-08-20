@@ -118,9 +118,8 @@ bool TrySincTime()
         unixTimeShift = ShiftWindow.getAverage();
 
 #ifdef STAT
-        Serial.printf("latency: %lu microSec\n", latency);
-        PrintLog("Time error :");
-        PrintLogln(error);
+        PrintLogf("latency: %lu microSec\n", latency);
+        PrintLogf("Time error = %d\n", error);
 #endif
         if (error > 100 || error < -100)
         {
@@ -140,8 +139,7 @@ bool TrySincTime()
                 double timeSpeedError = (double)error / currentMillis;
 
 #ifdef STAT
-                PrintLog("Time Speed error :");
-                PrintLogln(timeSpeedError * 1000000);
+                PrintLogf("Time Speed error = %d\n", timeSpeedError * 1000000);
 #endif
                 SpeedWindow.push(timeSpeed - timeSpeedError);
                 timeSpeed = SpeedWindow.getAverage();

@@ -13,6 +13,7 @@
 /// #include "globalData.h"
 #include "Debuging.h"
 #include "Blinker.h"
+#include "I2SManager.h"
 
 #ifndef STASSID
 #define STASSID "gachi24"
@@ -31,10 +32,12 @@ QueueHandle_t audioInQueue;
 QueueHandle_t audioOutQueue;
 QueueHandle_t tcpIncomingQueue = NULL;
 Blinker wifiLed(2, 500);
+I2SManager i2s0(I2S_NUM_0);
+I2SManager i2s1(I2S_NUM_1);
 
 struct AudioBuffer
 {
-  uint8_t data[1400];
+  uint8_t data[1420];
 };
 
 struct NetworkMessage
@@ -63,11 +66,12 @@ void T_PostConectWIFI()
   esp_err_t err = esp_wifi_set_ps(WIFI_PS_NONE);
   if (err == ESP_OK)
   {
-    Serial.println("SUCCESS: Wi-Fi Power Save is DISABLED!");
+    PrintLogln("SUCCESS: Wi-Fi Power Save is DISABLED!");
+    PrintLog(WiFi.RSSI());
   }
   else
   {
-    Serial.printf("ERROR: Failed to disable Power Save, code: %d\n", err);
+    PrintLogf("ERROR: Failed to disable Power Save, code: %d\n", err);
   }
 
   udpRes = new UdpReceiver(UDP_AUDIO_IN_PORT);
@@ -81,6 +85,8 @@ void S_IDLE()
   packetCounter++;
   if (packetCounter >= 1000)
   {
+    i2s0.checkConnection();
+    i2s1.checkConnection();
     packetCounter = 0;
     vTaskDelay(1); // Сбросит Watchdog и даст системе подышать
   }
@@ -93,15 +99,12 @@ void S_IDLE()
   if (circleTime - circleLastTime > 1000)
   {
 
-    PrintLog("SPS = ");
-    PrintLogln(statesPerSec);
-    PrintLog("PPS = ");
-    PrintLogln(packetsPerSec);
+    PrintLogf("SPS = %d\n", statesPerSec);
+    PrintLogf("PPS = %d\n", packetsPerSec);
 
     if (errorsPerSec != 0)
     {
-      PrintLog("EPS = ");
-      PrintLogln(errorsPerSec);
+      PrintLogf("EPS = %d\n", errorsPerSec);
     }
 
     statesPerSec = 0;
@@ -174,6 +177,8 @@ void ProcessServerRec(String line)
     {
       SetSMFlag(GlobalSMFlags, TRANSIVEROPEN, false);
       SetSMFlag(GlobalSMFlags, RESSIVEROPEN, false);
+      i2s0.clear();
+      i2s1.clear();
     }
     if (line[1] == 'T')
     {
@@ -202,6 +207,71 @@ void S_SyncTime()
   // else
   /// PrintLogln("NTP sync failed");
 }
+void drawAudioPacket(const uint8_t *packetData)
+{
+  const int MAX_HEIGHT = 12; // Высота графика в строках (оптимально для консоли)
+  const int COLUMNS = 140;   // Жестко заданная вами ширина
+  uint8_t heights[COLUMNS] = {0};
+
+  // 1. Сканируем пакет и вычисляем высоту каждого из 140 столбиков
+  for (int i = 0; i < COLUMNS; i++)
+  {
+    // Вычисляем диапазон аудио-кадров, которые попадают в этот столбик (примерно по 2.5 кадра на столбец)
+    int startFrame = (i * 350) / COLUMNS;
+    int endFrame = ((i + 1) * 350) / COLUMNS;
+    if (endFrame == startFrame)
+      endFrame++; // Защита: минимум 1 кадр
+
+    uint16_t maxAmp = 0;
+
+    // Ищем максимальный пик внутри этого временного окошка (Peak Detection)
+    for (int f = startFrame; f < endFrame && f < 350; f++)
+    {
+      // Смещение: 6 байт заголовок + 4 байта на каждый стерео-кадр (Лев 16бит + Прав 16бит)
+      int byteIdx = 6 + (f * 4);
+
+      // Читаем левый канал (Little Endian)
+      int16_t leftSample = (int16_t)(packetData[byteIdx] | (packetData[byteIdx + 1] << 8));
+
+      // Берем модуль (нам важна сила сигнала, а не его полярность)
+      uint16_t amp = abs(leftSample);
+      if (amp > maxAmp)
+      {
+        maxAmp = amp;
+      }
+    }
+
+    // Масштабируем амплитуду (0..32768) в высоту столбика (0..MAX_HEIGHT)
+    heights[i] = (maxAmp * MAX_HEIGHT) / 32768;
+  }
+
+  // 2. Построчный вывод в консоль (рисуем сверху вниз)
+  PrintLogln("\n[--- AUDIO PACKET VISUALIZATION ---]");
+
+  for (int r = MAX_HEIGHT; r > 0; r--)
+  {
+    char line[COLUMNS + 1]; // Буфер для одной горизонтальной строки
+
+    for (int c = 0; c < COLUMNS; c++)
+    {
+      if (heights[c] >= r)
+      {
+        line[c] = '#'; // Если столбик дотягивается до этой высоты — ставим блок
+      }
+      else
+      {
+        line[c] = ' '; // Если не дотягивается — пустота
+      }
+    }
+    line[COLUMNS] = '\0'; // Закрываем строку
+    PrintLogln(line);     // Выплевываем строку в консоль
+  }
+
+  // Рисуем красивое подчеркивание (дно графика)
+  for (int i = 0; i < COLUMNS; i++)
+    PrintLog("-");
+  PrintLogln("");
+}
 
 void S_UDPSpamTest()
 {
@@ -214,7 +284,7 @@ void S_UDPSpamTest()
 
     AudioBuffer currentBuffer;
 
-    uint16_t count = 1392;
+    uint16_t count = 1406;
     static uint16_t ind = 0;
     uint16_t time = GetRealTimeMarker();
 
@@ -231,6 +301,52 @@ void S_UDPSpamTest()
       ind++;
   }
 }
+
+void S_ReadI2Ss()
+{
+  const uint16_t audioSize = 1400; // Размер чистых аудиоданных (стерео, 16 бит)
+  const uint16_t totalPacketSize = 1406;
+  AudioBuffer currentBuffer;
+  static uint16_t ind = 0;
+  // PrintLogf("[i2s]Type = %d\n", i2s1.getType());
+  if (i2s0.getType() == DEVICE_ADC_ONLY)
+  {
+
+    size_t bytesRead = i2s0.read(&currentBuffer.data[6], audioSize);
+    // PrintLogf("[i2s]bytesRead = %d\n", bytesRead);
+
+    if (bytesRead == audioSize)
+    {
+      // String outStr = "[i2s] Первые байты 16 бит аудио (данные возвращенные read()): ";
+      // for (int i = 6; i < 126; i++)
+      // {
+      //   outStr += String(currentBuffer.data[i]) + " ";
+      // }
+      // PrintLogln(outStr);
+
+      uint16_t time = GetRealTimeMarker();
+      currentBuffer.data[0] = (uint8_t)(totalPacketSize & 0xFF);
+      currentBuffer.data[1] = (uint8_t)((totalPacketSize >> 8) & 0xFF);
+
+      currentBuffer.data[2] = (uint8_t)(ind & 0xFF);
+      currentBuffer.data[3] = (uint8_t)((ind >> 8) & 0xFF);
+
+      currentBuffer.data[4] = (uint8_t)(time & 0xFF);
+      currentBuffer.data[5] = (uint8_t)((time >> 8) & 0xFF);
+
+      if (xQueueSend(audioOutQueue, &currentBuffer, pdMS_TO_TICKS(0)) == pdPASS)
+      {
+        // drawAudioPacket(currentBuffer.data);
+        ind++;
+      }
+      else
+      {
+        // PrintLogln("[I2S Перегрузка] Очередь полна, пакет пропущен!");
+      }
+    }
+  }
+}
+
 void S_UDPParse()
 {
   AudioBuffer abuffer;
@@ -260,7 +376,7 @@ void S_PushAudio()
 
   currentAudio = circArr.get(pointer);
 
-  Serial.printf(" %03u     ", currentAudio->data[2]);
+  // PrintLogf(" %03u     ", currentAudio->data[2]);
   if (currentAudio->data[0] == 0)
   {
     PrintLogln("AUDIO LOST");
@@ -276,15 +392,25 @@ void S_PushAudio()
       }
       else
       {
-        memcpy(lastAudio, &zeroAudio, 1400);
+        if (lastAudio->data[0] != 0)
+        {
+          size_t written = i2s0.write(&zeroAudio.data[6], 1400);
+          if (written != 1400)
+            PrintLogln("[I2S Перегрузка] Очередь полна, пакет пропущен!");
+        }
+        memcpy(lastAudio, &zeroAudio, sizeof(AudioBuffer));
         lastAudio = currentAudio;
         pointer++;
       }
     }
     else
     {
+      size_t written = i2s0.write(&zeroAudio.data[6], 1400);
+      if (written != 1400)
+        PrintLogln("[I2S Перегрузка] Очередь полна, пакет пропущен!");
+
       if (lastAudio != nullptr)
-        memcpy(lastAudio, &zeroAudio, 1400);
+        memcpy(lastAudio, &zeroAudio, sizeof(AudioBuffer));
       lastAudio = currentAudio;
       pointer++;
     }
@@ -295,19 +421,22 @@ void S_PushAudio()
     if (time + shiftMs - GetRealTimeMarker() <= 0)
     {
 
-      for (size_t i = 0; i < circArr.size(); ++i)
-      {
-        auto ptr = circArr.get(i);
-        Serial.printf(" %03u", ptr->data[2]);
-      }
+      // for (size_t i = 0; i < circArr.size(); ++i)
+      // {
+      //   auto ptr = circArr.get(i);
+      //   PrintLogf(" %03u", ptr->data[2]);
+      // }
+      size_t written = i2s0.write(&currentAudio->data[6], 1400);
+      if (written != 1400)
+        PrintLogln("[I2S Перегрузка] Очередь полна, пакет пропущен!");
 
       pointer++;
       if (lastAudio != nullptr)
-        memcpy(lastAudio, &zeroAudio, 1400);
+        memcpy(lastAudio, &zeroAudio, sizeof(AudioBuffer));
       lastAudio = currentAudio;
     }
   }
-  PrintLogln("");
+  // PrintLogln("");
 
   // PrintLogln("OVERLAP");
 }
@@ -316,7 +445,9 @@ void setup()
 {
 
   SN = (uint32_t)ESP.getEfuseMac();
+#ifdef DEBUG
   Serial.begin(115200);
+#endif
 #ifdef WITH_GDB
   gdbstub_init();
 #endif
@@ -339,7 +470,7 @@ void setup()
   TCPParing.addAction(S_ConectTCP);
   TCPUpdate.addAction(S_TCPUpdade);
   NTPUpdate.addAction(S_SyncTime);
-  Output.addAction(S_UDPSpamTest);
+  Output.addAction(S_ReadI2Ss);
   Input.addAction(S_UDPParse);
   Input.addAction(S_PushAudio);
   IDLE.addAction(S_IDLE);
@@ -386,6 +517,9 @@ void setup()
   audioOutQueue = xQueueCreate(10, sizeof(AudioBuffer));
   tcpIncomingQueue = xQueueCreate(10, sizeof(NetworkMessage));
 
+  i2s0.init(3, 4, 16, 17, 18, 19);
+  i2s1.init(1, 21, 22, 23, 25, 26);
+
   // Подключаем Wi-Fi ...
 
   // Задача для ЯДРА 0: Сбор звука
@@ -421,7 +555,7 @@ void CheckNetworkMemory()
   // Показывает самый большой цельный кусок памяти (если он маленький — память фрагментирована)
   uint32_t maxBlock = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
 
-  Serial.printf("[LwIP Memory] Free: %d bytes | Max Block: %d bytes\n", freeNetworkRam, maxBlock);
+  PrintLogf("[LwIP Memory] Free: %d bytes | Max Block: %d bytes\n", freeNetworkRam, maxBlock);
 }
 
 void AudioCaptureTask(void *pvParameters)
